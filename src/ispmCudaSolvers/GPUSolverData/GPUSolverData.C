@@ -1,0 +1,241 @@
+/*---------------------------------------------------------------------------*\
+  =========                 |
+  \\      /  F ield         | foam-extend: Open Source CFD
+   \\    /   O peration     |
+    \\  /    A nd           | For copyright notice see file Copyright
+     \\/     M anipulation  |
+-------------------------------------------------------------------------------
+License
+    This file is part of foam-extend.
+
+    foam-extend is free software: you can redistribute it and/or modify it
+    under the terms of the GNU General Public License as published by the
+    Free Software Foundation, either version 3 of the License, or (at your
+    option) any later version.
+
+    foam-extend is distributed in the hope that it will be useful, but
+    WITHOUT ANY WARRANTY; without even the implied warranty of
+    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+    General Public License for more details.
+
+    You should have received a copy of the GNU General Public License
+    along with foam-extend.  If not, see <http://www.gnu.org/licenses/>.
+
+Description
+    Container of data that is reused by the GPU solver across multiple time
+    steps as long as mesh topology is unchanging
+
+Author
+    Alexander Monakov, ISP RAS
+
+\*---------------------------------------------------------------------------*/
+
+#include "GPUSolverData.H"
+#include "util/cuda/sblas.h"
+#include "FoamCompat.H"
+
+namespace Foam
+{
+
+labelList GPUSolverData::recordCoupledCells(const lduAddressing& lduAddr)
+{
+    labelList allBoundaryCells;
+    for (label i = 0; i < lduAddr.nPatches(); i++)
+    {
+        allBoundaryCells.append(lduAddr.patchAddr(i));
+    }
+    sort(allBoundaryCells);
+    label last = -1, n = 0;
+    labelList compactedBoundaryCells(allBoundaryCells.size());
+    forAll(allBoundaryCells, i)
+    {
+        label cell = allBoundaryCells[i];
+        if (last != cell)
+        {
+            last = cell;
+            compactedBoundaryCells[n++] = cell;
+        }
+    }
+    compactedBoundaryCells.resize(n);
+    return compactedBoundaryCells;
+}
+
+GPUSolverData::GPUSolverData(const lduAddressing &lduAddr)
+{
+    addProfile(GPUPCGAux_ctor);
+    csrA = csr_from_ldu(lduAddr);
+    csr_order = build_order(csrA.elms.size(), csrA.elms);
+
+    new(&amul_plan) spmv_plan<scalar>(csrA, PLAN_EXHAUSTIVE);
+    gpu_order = build_order(csrA.elms.size(), amul_plan.host_matrix->elms);
+
+    cudaHostRegister(amul_plan.host_matrix->elms.data(),
+                     amul_plan.host_matrix->elms.size() * sizeof(scalar),
+                     0);
+
+    int nCells = csrA.n_rows;
+    for (int i = 0; i < n_gpu_vectors; i++)
+        new(&gpu_vectors[i]) dvec(nCells);
+
+    new(&gpu_scalars) dvec(n_gpu_scalars, true);
+    new(&gpu_scalars_dev) dvec(n_gpu_scalars_dev, false);
+
+    pinned1.resize(nCells, 0);
+    pinned2.resize(nCells, 0);
+    cudaHostRegister(pinned1.data(), nCells * sizeof(scalar),
+                     cudaHostRegisterMapped);
+    cudaHostRegister(pinned2.data(), nCells * sizeof(scalar),
+                     cudaHostRegisterMapped);
+    cudaHostGetDevicePointer(&gpuptr_pinned1, pinned1.data(), 0);
+    cudaHostGetDevicePointer(&gpuptr_pinned2, pinned2.data(), 0);
+
+    int gpuDeviceNo;
+    char gpuDeviceBusId[16];
+    cudaGetDevice(&gpuDeviceNo);
+    cudaDeviceGetPCIBusId(gpuDeviceBusId, 16, gpuDeviceNo);
+    Serr << Pstream::myProcNo() << ": bound to GPU at " << gpuDeviceBusId;
+    Serr << endl;
+
+    cudaDeviceSetSharedMemConfig(cudaSharedMemBankSizeEightByte);
+
+    coupledCells = recordCoupledCells(lduAddr);
+    new(&gpuCoupledCells) ::vector<label, device_memory_space_tag>
+      (coupledCells.size());
+    ::copy<label, device_memory_space_tag, host_memory_space_tag>
+      (gpuCoupledCells.data(), coupledCells.data(), coupledCells.size());
+}
+
+GPUSolverData* GPUSolverData::New(const lduMesh& mesh)
+{
+    return new GPUSolverData(mesh.lduAddr());
+}
+
+GPUSolverData::~GPUSolverData()
+{
+    if (!pinned1.data())
+        return;
+    cudaHostUnregister(pinned1.data());
+    cudaHostUnregister(pinned2.data());
+    if (amul_plan.host_matrix)
+        cudaHostUnregister(amul_plan.host_matrix->elms.data());
+}
+
+void GPUSolverData::updateEarly(const lduMatrix &lduA)
+{
+    update_from_ldu(lduA, gpu_order, amul_plan.host_matrix->elms);
+    copy_async<scalar, device_memory_space_tag, host_memory_space_tag>
+     (amul_plan.device_matrix->elms.data(),
+      amul_plan.host_matrix->elms.data(),
+      amul_plan.host_matrix->elms.size());
+}
+
+void GPUSolverData::updatePrecond(const lduMatrix &lduA,
+                                  const dictionary& dict)
+{
+    addProfile(updatePrecond);
+    if (!precond.plan(0))
+    {
+        if (!precond.busy())
+        {
+            dropTolerance = dict.lookupOrDefault<scalar>("AINVdropTolerance",
+                                                         -1);
+            scalar initial_droptol = (dropTolerance > 0
+                                      ? dropTolerance : droptune.getDroptol());
+            precond.go(lduA, csrA, csr_order, initial_droptol);
+        }
+        precond.update();
+    }
+    else if (precond.busy())
+    {
+        precond.resume();
+    }
+    else
+    {
+        precond.update();
+        precond.go(lduA, csrA, csr_order, dropTolerance);
+    }
+    droptune.resetPhase();
+}
+
+void GPUSolverData::suspendPrecond()
+{
+    precond.suspend();
+}
+
+bool GPUSolverData::retestDroptol(const lduMatrix &lduA)
+{
+    addProfile(retestDroptol);
+    if (dropTolerance > 0)
+        return false;
+    // FIXME make configurable
+    if (droptune.iterations() == 7)
+    {
+        dropTolerance = droptune.getBestDroptol();
+        return false;
+    }
+    precond.clear();
+    precond.go(lduA, csrA, csr_order, droptune.getDroptol());
+    precond.update();
+    return true;
+}
+
+void GPUSolverData::notePerformance(double time, int iterations, int maxIter)
+{
+    long bytes = sizeof(Foam::scalar) * csrA.n_rows * 18;
+    bytes += amul_plan.device_matrix->spmv_bytes();
+    bytes += precond.plan(0)->device_matrix->spmv_bytes();
+    bytes += precond.plan(1)->device_matrix->spmv_bytes();
+    bytes *= iterations;
+    Foam::Info << "GPU: " << iterations << " iters: " << time << " s: ";
+    Foam::Info << bytes * 1e-9 / time << " GB/s" << Foam::endl;
+
+    if (iterations == maxIter)
+        time = __builtin_inf();
+    droptune.noteTime(time);
+}
+
+void GPUSolverData::applyPrecond(dvec &x, dvec &Mx, dvec &tmp)
+{
+    precond.plan(0)->execute_spmv(x, tmp);
+    precond.plan(1)->execute_spmv(tmp, Mx);
+}
+
+void GPUSolverData::Amul(dvec& x, dvec& Ax, dvec& tmp,
+                         cudaEventScoped& computed_coupled,
+                         const lduMatrix& matrix_,
+                         const FieldField<Field, scalar>& coupleBouCoeffs_,
+                         const lduInterfaceFieldPtrsList& interfaces_,
+                         const direction cmpt)
+{
+    if (gpuCoupledCells.size())
+    {
+        sblas::copy_indexed(tmp.data(), x.data(),
+                            gpuCoupledCells.data(), gpuCoupledCells.size());
+        cudaMemcpyAsync(pinned2.data(), tmp.data(),
+                        gpuCoupledCells.size() * sizeof(scalar),
+                        cudaMemcpyDeviceToHost);
+        computed_coupled.record();
+    }
+    amul_plan.execute_spmv(x, Ax);
+    if (gpuCoupledCells.size())
+    {
+        computed_coupled.await();
+        for (int i = 0; i < coupledCells.size(); i++)
+            pinned1[coupledCells[i]] = pinned2[i];
+        matrix_.initMatrixInterfaces(coupleBouCoeffs_, interfaces_,
+                                     pinned1, pinned2, cmpt);
+        for (int i = 0; i < coupledCells.size(); i++)
+            pinned2[coupledCells[i]] = 0;
+        matrix_.updateMatrixInterfaces(coupleBouCoeffs_, interfaces_,
+                                       pinned1, pinned2, cmpt);
+        for (int i = 0; i < coupledCells.size(); i++)
+            pinned1[i] = pinned2[coupledCells[i]];
+        cudaMemcpyAsync(tmp.data(), pinned1.data(),
+                        gpuCoupledCells.size() * sizeof(scalar),
+                        cudaMemcpyHostToDevice);
+        sblas::add_indexed(Ax.data(), tmp.data(),
+                           gpuCoupledCells.data(), gpuCoupledCells.size());
+    }
+}
+
+}

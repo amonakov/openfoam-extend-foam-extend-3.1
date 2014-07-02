@@ -59,10 +59,9 @@
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 # System installed CUDA
-#setenv CUDA_SYSTEM 1
 #setenv CUDA_DIR path_to_system_installed_cuda
 #setenv CUDA_BIN_DIR $CUDA_DIR/bin
-#setenv CUDA_LIB_DIR $CUDA_DIR/lib
+#setenv CUDA_LIB_DIR $CUDA_DIR/lib64
 #setenv CUDA_INCLUDE_DIR $CUDA_DIR/include
 #setenv CUDA_ARCH sm_20
 

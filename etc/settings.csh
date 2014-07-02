@@ -413,12 +413,14 @@ endif
 
 # CUDA library
 # ~~~~~~~~~~~~
-if ( $?CUDA_SYSTEM == 0 && -e /usr/local/cuda-5.5/bin/nvcc ) then
-    setenv CUDA_DIR /usr/local/cuda-5.5
-    setenv CUDA_BIN_DIR $CUDA_DIR/bin
-    setenv CUDA_LIB_DIR $CUDA_DIR/lib64
-    setenv CUDA_INCLUDE_DIR $CUDA_DIR/include
-    setenv CUDA_ARCH sm_20
+if ( ! $?CUDA_DIR ) then
+    which nvcc >/dev/null && setenv CUDA_DIR `which nvcc | sed s@/bin/nvcc@@`
+endif
+if ( $?CUDA_DIR ) then
+    if ( ! $?CUDA_BIN_DIR ) setenv CUDA_BIN_DIR $CUDA_DIR/bin
+    if ( ! $?CUDA_LIB_DIR ) setenv CUDA_LIB_DIR $CUDA_DIR/lib64
+    if ( ! $?CUDA_INCLUDE_DIR ) setenv CUDA_INCLUDE_DIR $CUDA_DIR/include
+    if ( ! $?CUDA_ARCH ) setenv CUDA_ARCH sm_20
 endif
 
 if ( $?CUDA_BIN_DIR ) then

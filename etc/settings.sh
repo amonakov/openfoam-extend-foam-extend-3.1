@@ -493,14 +493,21 @@ export MPI_BUFFER_SIZE
 
 # CUDA if available
 # ~~~~~~~~~~~~~~~~~
-[ -z "$CUDA_SYSTEM" ] && [ -e /usr/local/cuda-5.5/bin/nvcc ] && {
-    export CUDA_DIR=/usr/local/cuda-5.5
-    export CUDA_BIN_DIR=$CUDA_DIR/bin
-    export CUDA_LIB_DIR=$CUDA_DIR/lib64
-    export CUDA_INCLUDE_DIR=$CUDA_DIR/include
-}
+if [ -z "$CUDA_DIR" ]
+then
+    # If CUDA compiler is available in PATH, use it to obtain CUDA location
+    which nvcc >/dev/null && export CUDA_DIR=`which nvcc | sed s@/bin/nvcc@@`
+fi
+if [ -n "$CUDA_DIR" ]
+then
+    : ${CUDA_BIN_DIR:="$CUDA_DIR"/bin};   export CUDA_BIN_DIR
+    : ${CUDA_LIB_DIR:="$CUDA_DIR"/lib64}; export CUDA_LIB_DIR
+    : ${CUDA_INCLUDE_DIR:="$CUDA_DIR"/include}; export CUDA_INCLUDE_DIR
+    : ${CUDA_ARCH:=sm_20}; export CUDA_ARCH
+fi
 
-[ -d "$CUDA_LIB_DIR" ] && _foamAddPath $CUDA_BIN_DIR && _foamAddLib $CUDA_LIB_DIR
+[ -d "$CUDA_BIN_DIR" ] && _foamAddPath $CUDA_BIN_DIR
+[ -d "$CUDA_LIB_DIR" ] && _foamAddLib  $CUDA_LIB_DIR
 
 
 # CGAL library if available

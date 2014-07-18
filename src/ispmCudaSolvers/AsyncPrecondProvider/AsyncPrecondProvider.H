@@ -60,7 +60,8 @@ class AsyncPrecondProvider
 
         typedef float PrecType;
 
-        spmv_plan<PrecType> *plan_[2];
+        typedef spmv_plan<scalar, PrecType> spmvType;
+        spmvType *plan_[2];
         csr_matrix<PrecType> csrAinv1, csrAinv2;
 
         struct
@@ -106,7 +107,7 @@ public:
 
     // Member functions
 
-        spmv_plan<PrecType> *plan(int idx)
+        spmvType *plan(int idx)
         {
             return plan_[idx];
         }
@@ -146,8 +147,8 @@ public:
             pthread_join(worker.thread, NULL);
             if (!plan_[0])
             {
-                plan_[0] = new spmv_plan<PrecType>(csrAinv1, PLAN_EXHAUSTIVE);
-                plan_[1] = new spmv_plan<PrecType>(csrAinv2, PLAN_EXHAUSTIVE);
+                plan_[0] = new spmvType(csrAinv1, PLAN_EXHAUSTIVE);
+                plan_[1] = new spmvType(csrAinv2, PLAN_EXHAUSTIVE);
             }
             else
             {

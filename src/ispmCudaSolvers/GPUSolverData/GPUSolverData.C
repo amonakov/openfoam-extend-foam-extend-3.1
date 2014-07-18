@@ -32,6 +32,7 @@ Author
 
 #include "GPUSolverData.H"
 #include "util/cuda/sblas.h"
+#include "util/cuda/initialize.h"
 #include "FoamCompat.H"
 
 namespace Foam
@@ -65,31 +66,27 @@ labelList GPUSolverData::recordCoupledCells(const lduMesh& mesh)
 GPUSolverData::GPUSolverData(const lduMesh& mesh)
 {
     addProfile(GPUPCGAux_ctor);
+    ispm_initialize();
     csrA = csr_from_ldu(mesh.lduAddr());
     csr_order = build_order(csrA.elms.size(), csrA.elms);
 
     new(&amul_plan) spmv_plan<scalar>(csrA, PLAN_EXHAUSTIVE);
     gpu_order = build_order(csrA.elms.size(), amul_plan.host_matrix->elms);
 
-    cudaHostRegister(amul_plan.host_matrix->elms.data(),
-                     amul_plan.host_matrix->elms.size() * sizeof(scalar),
-                     0);
+    new(&elms) cuda_pinned_region<scalar>(amul_plan.host_matrix->elms.data(),
+                                          amul_plan.host_matrix->elms.size());
 
     int nCells = csrA.n_rows;
     for (int i = 0; i < n_gpu_vectors; i++)
-        new(&gpu_vectors[i]) dvec(nCells);
+        gpu_vectors[i].resize(nCells);
 
-    new(&gpu_scalars) dvec(n_gpu_scalars, true);
-    new(&gpu_scalars_dev) dvec(n_gpu_scalars_dev, false);
+    gpu_scalars.resize(n_gpu_scalars);
+    gpu_scalars_dev.resize(n_gpu_scalars_dev);
 
     pinned1.resize(nCells, 0);
     pinned2.resize(nCells, 0);
-    cudaHostRegister(pinned1.data(), nCells * sizeof(scalar),
-                     cudaHostRegisterMapped);
-    cudaHostRegister(pinned2.data(), nCells * sizeof(scalar),
-                     cudaHostRegisterMapped);
-    cudaHostGetDevicePointer(&gpuptr_pinned1, pinned1.data(), 0);
-    cudaHostGetDevicePointer(&gpuptr_pinned2, pinned2.data(), 0);
+    new(&gpuptr_pinned1) cuda_pinned_region<scalar>(pinned1.data(), nCells);
+    new(&gpuptr_pinned2) cuda_pinned_region<scalar>(pinned2.data(), nCells);
 
     int gpuDeviceNo;
     char gpuDeviceBusId[16];
@@ -98,13 +95,8 @@ GPUSolverData::GPUSolverData(const lduMesh& mesh)
     Serr << Pstream::myProcNo() << ": bound to GPU at " << gpuDeviceBusId;
     Serr << endl;
 
-    cudaDeviceSetSharedMemConfig(cudaSharedMemBankSizeEightByte);
-
     coupledCells = recordCoupledCells(mesh);
-    new(&gpuCoupledCells) ::vector<label, device_memory_space_tag>
-      (coupledCells.size());
-    ::copy<label, device_memory_space_tag, host_memory_space_tag>
-      (gpuCoupledCells.data(), coupledCells.data(), coupledCells.size());
+    gpuCoupledCells.assign(coupledCells.begin(), coupledCells.end());
 }
 
 GPUSolverData* GPUSolverData::New(const lduMesh& mesh)
@@ -112,23 +104,12 @@ GPUSolverData* GPUSolverData::New(const lduMesh& mesh)
     return new GPUSolverData(mesh);
 }
 
-GPUSolverData::~GPUSolverData()
-{
-    if (!pinned1.data())
-        return;
-    cudaHostUnregister(pinned1.data());
-    cudaHostUnregister(pinned2.data());
-    if (amul_plan.host_matrix)
-        cudaHostUnregister(amul_plan.host_matrix->elms.data());
-}
-
 void GPUSolverData::updateEarly(const lduMatrix &lduA)
 {
     update_from_ldu(lduA, gpu_order, amul_plan.host_matrix->elms);
-    copy_async<scalar, device_memory_space_tag, host_memory_space_tag>
-     (amul_plan.device_matrix->elms.data(),
-      amul_plan.host_matrix->elms.data(),
-      amul_plan.host_matrix->elms.size());
+    amul_plan.device_matrix->elms.assign_async
+        (&amul_plan.host_matrix->elms.front(),
+         &amul_plan.host_matrix->elms.back());
 }
 
 void GPUSolverData::updatePrecond(const lduMatrix &lduA,
@@ -213,9 +194,7 @@ void GPUSolverData::Amul(dvec& x, dvec& Ax, dvec& tmp,
     {
         sblas::copy_indexed(tmp.data(), x.data(),
                             gpuCoupledCells.data(), gpuCoupledCells.size());
-        cudaMemcpyAsync(pinned2.data(), tmp.data(),
-                        gpuCoupledCells.size() * sizeof(scalar),
-                        cudaMemcpyDeviceToHost);
+        copy_async(pinned2.data(), tmp.data(), gpuCoupledCells.size());
         computed_coupled.record();
     }
     amul_plan.execute_spmv(x, Ax);
@@ -232,9 +211,7 @@ void GPUSolverData::Amul(dvec& x, dvec& Ax, dvec& tmp,
                                        pinned1, pinned2, cmpt);
         for (int i = 0; i < coupledCells.size(); i++)
             pinned1[i] = pinned2[coupledCells[i]];
-        cudaMemcpyAsync(tmp.data(), pinned1.data(),
-                        gpuCoupledCells.size() * sizeof(scalar),
-                        cudaMemcpyHostToDevice);
+        copy_async(tmp.data(), pinned1.data(), gpuCoupledCells.size());
         sblas::add_indexed(Ax.data(), tmp.data(),
                            gpuCoupledCells.data(), gpuCoupledCells.size());
     }

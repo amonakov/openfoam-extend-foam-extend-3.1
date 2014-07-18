@@ -47,6 +47,7 @@ SourceFiles
 #include "fastainv/droptol-tuning.h"
 #include "lduMatrixConversion.H"
 #include "plan/plan.h"
+#include "util/cuda/pinner.h"
 
 // * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //
 
@@ -66,7 +67,7 @@ private:
     // Private data
 
         static const int n_gpu_scalars = 4;
-        dvec gpu_scalars;
+        std::vector<scalar, cuda_pinned_allocator<scalar> > gpu_scalars;
 
         static const int n_gpu_scalars_dev = 2;
         dvec gpu_scalars_dev;
@@ -75,7 +76,7 @@ private:
         dvec gpu_vectors[n_gpu_vectors];
 
         scalarField pinned1, pinned2;
-        scalar *gpuptr_pinned1, *gpuptr_pinned2;
+        cuda_pinned_region<scalar> elms, gpuptr_pinned1, gpuptr_pinned2;
 
         csr_matrix<scalar> csrA;
         spmv_plan<scalar> amul_plan;
@@ -95,10 +96,6 @@ private:
 public:
 
         static GPUSolverData* New(const lduMesh&);
-
-    // Destructor
-
-        ~GPUSolverData();
 
     // Member functions
 
@@ -125,7 +122,7 @@ public:
             assert(idx < n_gpu_scalars);
             return gpu_scalars.data()[idx];
         }
-        scalar& gpu_scalar_devmem(int idx)
+        devmem<scalar>& gpu_scalar_devmem(int idx)
         {
             assert(idx < n_gpu_scalars_dev);
             return gpu_scalars_dev.data()[idx];

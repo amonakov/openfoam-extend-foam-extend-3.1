@@ -87,7 +87,6 @@ solverPerformance Foam::GPUPCG::solve
 
     label nCells = psi.size();
 
-    scalar* __restrict__ psiPtr = psi.begin();
     scalar normFactor;
 
     scalarField wA(nCells);
@@ -111,7 +110,6 @@ solverPerformance Foam::GPUPCG::solve
 
     // --- Calculate initial residual field
     scalarField rA(source - wA);
-    scalar* __restrict__ rAPtr = rA.begin();
 
     // --- Calculate normalised residual norm
     solverPerf.initialResidual() = gSumMag(rA)/normFactor;
@@ -130,14 +128,14 @@ solverPerformance Foam::GPUPCG::solve
         addProfile(GPUPCG_gpu);
 
         int i = 0;
-        scalar *gpu_gamma    = &p.gpu_scalar_pinned(i++);
-        scalar *gpu_gammaold = &p.gpu_scalar_pinned(i++);
-        scalar &gpu_delta    =  p.gpu_scalar_pinned(i++);
-        scalar &gpu_resnorm  =  p.gpu_scalar_pinned(i++);
+        pinmemptr<scalar> gpu_gamma    = &p.gpu_scalar_pinned(i++);
+        pinmemptr<scalar> gpu_gammaold = &p.gpu_scalar_pinned(i++);
+        pinmemptr<scalar> gpu_delta    = &p.gpu_scalar_pinned(i++);
+        pinmemptr<scalar> gpu_resnorm  = &p.gpu_scalar_pinned(i++);
 
         i = 0;
-        scalar *gpu_alpha    = &p.gpu_scalar_devmem(i++);
-        scalar *gpu_beta     = &p.gpu_scalar_devmem(i++);
+        devmem<scalar> *gpu_alpha      = &p.gpu_scalar_devmem(i++);
+        devmem<scalar> *gpu_beta       = &p.gpu_scalar_devmem(i++);
 
         i = 0;
         GPUSolverData::dvec   &gpu_psi  = p.gpu_vector(i++);
@@ -152,14 +150,11 @@ solverPerformance Foam::GPUPCG::solve
         GPUSolverData::dvec   &gpu_n    = p.gpu_vector(i++);
         GPUSolverData::dvec   &gpu_m    = p.gpu_vector(i++);
 
-        ::copy<scalar, device_memory_space_tag, host_memory_space_tag>
-            (gpu_psi.data(), psiPtr, nCells);
-        ::copy<scalar, device_memory_space_tag, host_memory_space_tag>
-            (gpu_res.data(), rAPtr,  nCells);
+        gpu_psi.assign(psi.begin(), psi.end());
+        gpu_res.assign(rA.begin(), rA.end());
 
         *gpu_gammaold = __builtin_inf();
-        ::copy<scalar, device_memory_space_tag, host_memory_space_tag>
-            (gpu_alpha, gpu_gammaold, 1);
+        copy(gpu_alpha, &*gpu_gammaold, 1);
 
         scalar dummy = 0;
         reduce(dummy, sumOp<scalar>());
@@ -177,8 +172,8 @@ solverPerformance Foam::GPUPCG::solve
         p.applyPrecond(gpu_res, gpu_u, gpu_tmp);
         p.Amul(gpu_u, gpu_w, gpu_tmp, computed_coupled, matrix_,
                coupleBouCoeffs_, interfaces_, cmpt);
-        sblas::dot(gpu_res.data(), gpu_u.data(), gpu_gamma, gpu_u.size());
-        sblas::dot(gpu_w.data(), gpu_u.data(), &gpu_delta, gpu_u.size());
+        sblas::dot(gpu_res.data(), gpu_u.data(), gpu_gamma(), gpu_u.size());
+        sblas::dot(gpu_w.data(), gpu_u.data(), gpu_delta(), gpu_u.size());
         for (;;)
         {
             p.applyPrecond(gpu_w, gpu_m, gpu_tmp);
@@ -188,8 +183,8 @@ solverPerformance Foam::GPUPCG::solve
             if (solverPerf.nIterations() > 0)
             {
                 computed_residual.await();
-                reduce(gpu_resnorm, sumOp<scalar>());
-                solverPerf.finalResidual() = gpu_resnorm / normFactor;
+                reduce(*gpu_resnorm, sumOp<scalar>());
+                solverPerf.finalResidual() = *gpu_resnorm / normFactor;
                 if (solverConverged(solverPerf))
                 {
                     break;
@@ -199,14 +194,14 @@ solverPerformance Foam::GPUPCG::solve
             if (Pstream::parRun())
             {
                 reduce(*gpu_gamma, sumOp<scalar>());
-                reduce(gpu_delta, sumOp<scalar>());
+                reduce(*gpu_delta, sumOp<scalar>());
             }
 
             sblas::ppcg_update_scalars(gpu_alpha, gpu_beta,
-                                       gpu_gamma, gpu_gammaold, &gpu_delta);
+                                       gpu_gamma(), gpu_gammaold(), gpu_delta());
             std::swap(gpu_gammaold, gpu_gamma);
             sblas::ppcg_update_vectors
-                (&gpu_resnorm, gpu_gamma, &gpu_delta, gpu_alpha, gpu_beta,
+                (gpu_resnorm(), gpu_gamma(), gpu_delta(), gpu_alpha, gpu_beta,
                  gpu_n.data(), gpu_m.data(), gpu_p.data(), gpu_s.data(),
                  gpu_q.data(), gpu_z.data(), gpu_psi.data(), gpu_res.data(),
                  gpu_u.data(), gpu_w.data(), gpu_n.size());
@@ -220,7 +215,7 @@ solverPerformance Foam::GPUPCG::solve
         double time = cutimer.elapsed_seconds();
         p.notePerformance(time, solverPerf.nIterations(), maxIter());
 
-        ::copy<scalar, host_memory_space_tag, device_memory_space_tag>(psiPtr, gpu_psi.data(), nCells);
+        copy(psi.data(), gpu_psi.data(), nCells);
 
     } while (p.retestDroptol(matrix_));
     p.suspendPrecond();

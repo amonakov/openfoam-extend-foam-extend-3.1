@@ -183,8 +183,8 @@ void GPUSolverData::notePerformance(double time, int iterations, int maxIter)
 {
     long bytes = sizeof(Foam::scalar) * csrA.n_rows * 18;
     bytes += amul_plan.device_matrix->spmv_bytes();
-    bytes += precond.plan(0)->device_matrix->spmv_bytes();
-    bytes += precond.plan(1)->device_matrix->spmv_bytes();
+    bytes += precond.plan(0)->device_matrix->spmv_bytes(false, sizeof(scalar));
+    bytes += precond.plan(1)->device_matrix->spmv_bytes(false, sizeof(scalar));
     bytes *= iterations;
     Foam::Info << "GPU: " << iterations << " iters: " << time << " s: ";
     Foam::Info << bytes * 1e-9 / time << " GB/s" << Foam::endl;

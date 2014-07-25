@@ -88,9 +88,9 @@ private:
         scalar dropTolerance;
         DroptolTuner droptune;
 
-        static labelList recordCoupledCells(const lduAddressing&);
+        static labelList recordCoupledCells(const lduMesh&);
 
-        GPUSolverData(const lduAddressing&);
+        GPUSolverData(const lduMesh&);
 
 public:
 

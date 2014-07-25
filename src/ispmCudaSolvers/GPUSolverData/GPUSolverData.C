@@ -37,12 +37,14 @@ Author
 namespace Foam
 {
 
-labelList GPUSolverData::recordCoupledCells(const lduAddressing& lduAddr)
+labelList GPUSolverData::recordCoupledCells(const lduMesh& mesh)
 {
     labelList allBoundaryCells;
-    for (label i = 0; i < lduAddr.nPatches(); i++)
+    forAll(mesh.interfaces(), patchI)
     {
-        allBoundaryCells.append(lduAddr.patchAddr(i));
+        if (!mesh.interfaces().set(patchI))
+            continue;
+        allBoundaryCells.append(mesh.lduAddr().patchAddr(patchI));
     }
     sort(allBoundaryCells);
     label last = -1, n = 0;
@@ -60,10 +62,10 @@ labelList GPUSolverData::recordCoupledCells(const lduAddressing& lduAddr)
     return compactedBoundaryCells;
 }
 
-GPUSolverData::GPUSolverData(const lduAddressing &lduAddr)
+GPUSolverData::GPUSolverData(const lduMesh& mesh)
 {
     addProfile(GPUPCGAux_ctor);
-    csrA = csr_from_ldu(lduAddr);
+    csrA = csr_from_ldu(mesh.lduAddr());
     csr_order = build_order(csrA.elms.size(), csrA.elms);
 
     new(&amul_plan) spmv_plan<scalar>(csrA, PLAN_EXHAUSTIVE);
@@ -98,7 +100,7 @@ GPUSolverData::GPUSolverData(const lduAddressing &lduAddr)
 
     cudaDeviceSetSharedMemConfig(cudaSharedMemBankSizeEightByte);
 
-    coupledCells = recordCoupledCells(lduAddr);
+    coupledCells = recordCoupledCells(mesh);
     new(&gpuCoupledCells) ::vector<label, device_memory_space_tag>
       (coupledCells.size());
     ::copy<label, device_memory_space_tag, host_memory_space_tag>
@@ -107,7 +109,7 @@ GPUSolverData::GPUSolverData(const lduAddressing &lduAddr)
 
 GPUSolverData* GPUSolverData::New(const lduMesh& mesh)
 {
-    return new GPUSolverData(mesh.lduAddr());
+    return new GPUSolverData(mesh);
 }
 
 GPUSolverData::~GPUSolverData()

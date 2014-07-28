@@ -44,7 +44,7 @@ template<class MeshType, class EntryType>
 Foam::solverPersistentData<MeshType, EntryType>::solverPersistentData
     (const MeshType& mesh)
 :
-    MeshObject<MeshType, solverPersistentData<MeshType, EntryType> >(mesh),
+    BaseMeshObject(mesh),
     dataPtrs_(1)
 {}
 

@@ -53,14 +53,28 @@ class mapPolyMesh;
                      Class solverPersistentData Declaration
 \*---------------------------------------------------------------------------*/
 
+template<class MeshType, class EntryType>
+class CompatMeshObject {
+public:
+#if FOAM_VERSION >= 300
+    typedef MeshObject<MeshType, EntryType> Type;
+#else
+    typedef MeshObject<MeshType, UpdateableMeshObject, EntryType> Type;
+#endif
+};
+
 TemplateName(solverPersistentData);
 
 template<class MeshType, class EntryType>
 class solverPersistentData
 :
     public solverPersistentDataName,
-    public MeshObject<MeshType, solverPersistentData<MeshType, EntryType> >
+    public CompatMeshObject
+        <MeshType, solverPersistentData<MeshType, EntryType> >::Type
 {
+    typedef typename CompatMeshObject
+        <MeshType, solverPersistentData<MeshType, EntryType> >::Type
+        BaseMeshObject;
     // Private data
 
         //- Pointer to persistent data
@@ -91,6 +105,7 @@ public:
         EntryType* operator()(const word&) const;
 
 
+#if FOAM_VERSION >= 300
         //- Update after mesh motion:
         //  Do nothing
         virtual bool movePoints() const
@@ -105,6 +120,16 @@ public:
             dataPtrs_.clear();
             return true;
         }
+#else
+        virtual bool movePoints()
+        {
+            return true;
+        }
+        virtual void updateMesh(const mapPolyMesh&)
+        {
+            dataPtrs_.clear();
+        }
+#endif
 };
 
 

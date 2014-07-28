@@ -1,5 +1,10 @@
+ifdef FOAM_DEV
+FOAM_DEV_OPTION = -DFOAM_DEV
+endif
+
 EXE_INC = \
-    -I$(ISPM_DIR) -I$(CUDA_INCLUDE_DIR) -DFOAM_VERSION=$(FOAM_VERSION) \
+    -I$(ISPM_DIR) -I$(CUDA_INCLUDE_DIR) \
+    $(FOAM_DEV_OPTION) \
     -Wno-sign-compare -Wno-old-style-cast
 
 LIB_LIBS = \

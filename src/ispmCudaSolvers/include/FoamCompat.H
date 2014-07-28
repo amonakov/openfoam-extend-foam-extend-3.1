@@ -33,11 +33,7 @@ Author
 #ifndef FoamCompat_H
 #define FoamCompat_H
 
-#ifndef FOAM_VERSION
-#error "FOAM_VERSION not set"
-#endif
-
-#if FOAM_VERSION >= 300
+#ifdef FOAM_DEV
 
 // foam-extend 3.0 or newer
 

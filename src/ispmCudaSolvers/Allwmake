@@ -21,13 +21,6 @@ then
     exit 0
 fi
 
-FOAM_VERSION=$( (IFS=. read a b c; echo $[$a*100 + $b]) <<<$WM_PROJECT_VERSION)
-
-export FOAM_VERSION
-
 wmake libso
-
-unset  FOAM_VERSION
-
 
 # ----------------------------------------------------------------- end-of-file

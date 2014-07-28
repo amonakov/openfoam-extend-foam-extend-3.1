@@ -56,7 +56,7 @@ class mapPolyMesh;
 template<class MeshType, class EntryType>
 class CompatMeshObject {
 public:
-#if FOAM_VERSION >= 300
+#ifdef FOAM_DEV
     typedef MeshObject<MeshType, EntryType> Type;
 #else
     typedef MeshObject<MeshType, UpdateableMeshObject, EntryType> Type;
@@ -105,7 +105,7 @@ public:
         EntryType* operator()(const word&) const;
 
 
-#if FOAM_VERSION >= 300
+#ifdef FOAM_DEV
         //- Update after mesh motion:
         //  Do nothing
         virtual bool movePoints() const

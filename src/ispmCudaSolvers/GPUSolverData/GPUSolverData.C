@@ -67,6 +67,8 @@ GPUSolverData::GPUSolverData(const lduMesh& mesh)
 {
     addProfile(GPUPCGAux_ctor);
     ispm_initialize();
+    Pout << "Using GPU at " << get_device_string().str << endl;
+
     csrA = csr_from_ldu(mesh.lduAddr());
     csr_order = build_order(csrA.elms.size(), csrA.elms);
 
@@ -87,13 +89,6 @@ GPUSolverData::GPUSolverData(const lduMesh& mesh)
     pinned2.resize(nCells, 0);
     new(&gpuptr_pinned1) cuda_pinned_region<scalar>(pinned1.data(), nCells);
     new(&gpuptr_pinned2) cuda_pinned_region<scalar>(pinned2.data(), nCells);
-
-    int gpuDeviceNo;
-    char gpuDeviceBusId[16];
-    cudaGetDevice(&gpuDeviceNo);
-    cudaDeviceGetPCIBusId(gpuDeviceBusId, 16, gpuDeviceNo);
-    Serr << Pstream::myProcNo() << ": bound to GPU at " << gpuDeviceBusId;
-    Serr << endl;
 
     coupledCells = recordCoupledCells(mesh);
     gpuCoupledCells.assign(coupledCells.begin(), coupledCells.end());

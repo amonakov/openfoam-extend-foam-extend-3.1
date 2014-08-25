@@ -245,8 +245,22 @@ void Foam::Time::readModifiedObjects()
 
         if (Pstream::parRun())
         {
-            anyModified = controlDict_.modified()
-                || objectRegistry::modified();
+            if (Pstream::master())
+            {
+                anyModified = controlDict_.modified()
+                    || objectRegistry::modified();
+            }
+            // Broadcast master status to all nodes
+            reduce(anyModified, andOp<bool>());
+            if (!anyModified)
+            {
+                return;
+            }
+            if (!Pstream::master())
+            {
+                anyModified = controlDict_.modified()
+                    || objectRegistry::modified();
+            }
 
             bool anyModifiedOnThisProc = anyModified;
             reduce(anyModified, andOp<bool>());

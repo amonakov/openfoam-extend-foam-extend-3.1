@@ -161,50 +161,57 @@ bool Foam::regIOobject::modified() const
 
 bool Foam::regIOobject::readIfModified()
 {
-    if (lastModified_)
-    {
-        time_t newTimeStamp = lastModified(filePath());
-
-        bool readFile = false;
-
-        if (newTimeStamp > (lastModified_ + fileModificationSkew))
-        {
-            readFile = true;
-        }
-
-        if (Pstream::parRun())
-        {
-            bool readFileOnThisProc = readFile;
-            reduce(readFile, andOp<bool>());
-
-            if (readFileOnThisProc && !readFile)
-            {
-                WarningIn("regIOobject::readIfModified()")
-                    << "Delaying reading " << name()
-                    << " of class " << headerClassName()
-                    << " due to inconsistent "
-                       "file time-stamps between processors"
-                    << endl;
-            }
-        }
-
-        if (readFile)
-        {
-            lastModified_ = newTimeStamp;
-            Info<< "regIOobject::readIfModified() : " << nl
-                << "    Reading object " << name()
-                << " from file " << filePath() << endl;
-            return read();
-        }
-        else
-        {
-            return false;
-        }
-    }
-    else
+    if (!lastModified_)
     {
         return false;
     }
+
+    bool readFile = true;
+    time_t newTimeStamp = 0;
+
+    // For parallel runs, start by checking modification time on master only
+    if (Pstream::master())
+    {
+        newTimeStamp = lastModified(filePath());
+        readFile = (newTimeStamp > (lastModified_ + fileModificationSkew));
+    }
+
+    // Avoid filesystem interaction from other ranks if unmodified on master
+    // (MPI broadcast would suffice here, but Pstream lacks it)
+    reduce(readFile, andOp<bool>());
+    if (!readFile)
+    {
+        return false;
+    }
+
+    if (!Pstream::master())
+    {
+        newTimeStamp = lastModified(filePath());
+        readFile = (newTimeStamp > (lastModified_ + fileModificationSkew));
+    }
+
+    bool readFileOnThisProc = readFile;
+    reduce(readFile, andOp<bool>());
+
+    if (!readFile)
+    {
+        if (readFileOnThisProc)
+        {
+            WarningIn("regIOobject::readIfModified()")
+                << "Delaying reading " << name()
+                << " of class " << headerClassName()
+                << " due to inconsistent "
+                   "file time-stamps between processors"
+                << endl;
+        }
+        return false;
+    }
+
+    lastModified_ = newTimeStamp;
+    Info<< "regIOobject::readIfModified() : " << nl
+        << "    Reading object " << name()
+        << " from file " << filePath() << endl;
+    return read();
 }
 
 
